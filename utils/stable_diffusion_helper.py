@@ -75,6 +75,7 @@ class StableDiffusionGenerator:
     ) -> Tuple[Image.Image, Image.Image]:
         """
         Generate a pair of images (with and without beard) using img2img for consistency.
+        First generates clean-shaven version, then adds beard using img2img.
         
         Args:
             base_prompt (str): Base prompt describing the person
@@ -88,7 +89,7 @@ class StableDiffusionGenerator:
             img2img_strength (float): Strength of the img2img transformation (0.0 to 1.0)
             
         Returns:
-            Tuple[PIL.Image, PIL.Image]: Pair of generated images (bearded, clean-shaven)
+            Tuple[PIL.Image, PIL.Image]: Pair of generated images (clean-shaven, bearded)
         """
         # Check if the pair already exists
         beard_path = os.path.join(output_dir, split, "beard", f"person{pair_id:03d}_beard.png")
@@ -96,25 +97,25 @@ class StableDiffusionGenerator:
         
         if os.path.exists(beard_path) and os.path.exists(no_beard_path):
             logger.info(f"Pair {pair_id} already exists in {split} set, skipping generation")
-            return Image.open(beard_path), Image.open(no_beard_path)
+            return Image.open(no_beard_path), Image.open(beard_path)
         
-        # Generate the first image (bearded version)
-        bearded_prompt = f"{base_prompt}, {beard_prompt}" if beard_prompt not in base_prompt else base_prompt
+        # Generate the first image (clean-shaven version)
+        clean_prompt = f"{base_prompt}, {no_beard_prompt}" if no_beard_prompt not in base_prompt else base_prompt
         generator = torch.Generator(device=self.device).manual_seed(seed)
         
         try:
-            # Generate the bearded version first
-            bearded_image = self.pipe(
-                bearded_prompt,
+            # Generate the clean-shaven version first
+            clean_image = self.pipe(
+                clean_prompt,
                 num_inference_steps=50,
                 generator=generator
             ).images[0]
             
-            # Use img2img to generate the clean-shaven version
-            clean_prompt = f"{base_prompt}, {no_beard_prompt}" if no_beard_prompt not in base_prompt else base_prompt
-            clean_image = self.img2img_pipe(
-                prompt=clean_prompt,
-                image=bearded_image,
+            # Use img2img to generate the bearded version
+            bearded_prompt = f"{base_prompt}, {beard_prompt}" if beard_prompt not in base_prompt else base_prompt
+            bearded_image = self.img2img_pipe(
+                prompt=bearded_prompt,
+                image=clean_image,
                 strength=img2img_strength,
                 num_inference_steps=50,
                 generator=generator
@@ -131,7 +132,7 @@ class StableDiffusionGenerator:
                 bearded_image.save(beard_path)
                 clean_image.save(no_beard_path)
                 
-            return bearded_image, clean_image
+            return clean_image, bearded_image
             
         except Exception as e:
             logger.error(f"Failed to generate image pair: {str(e)}")
@@ -209,7 +210,7 @@ if __name__ == "__main__":
     
     # Generate a single pair (for testing)
     for i in range(4):
-        bearded, clean = generator.generate_paired_images(
+        clean, bearded = generator.generate_paired_images(
             base_prompt="A portrait photo of a young man, smiling, studio lighting",
             seed=42 + i,
             split="train",
