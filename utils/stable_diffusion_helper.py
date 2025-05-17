@@ -65,13 +65,13 @@ class StableDiffusionGenerator:
         self,
         base_prompt: str,
         seed: int,
-        beard_prompt: str = "with a thick brown beard",
-        no_beard_prompt: str = "clean-shaven face",
+        beard_prompt: str = "has a thick brown beard",
+        no_beard_prompt: str = "with a clean-shaven face",
         output_dir: str = "dataset",
         split: str = "train",
         pair_id: int = 0,
         save_images: bool = True,
-        img2img_strength: float = 0.75  # Control how much of the original image to preserve
+        img2img_strength: float = 0.5  # Control how much of the original image to preserve
     ) -> Tuple[Image.Image, Image.Image]:
         """
         Generate a pair of images (with and without beard) using img2img for consistency.
@@ -101,6 +101,7 @@ class StableDiffusionGenerator:
         
         # Generate the first image (clean-shaven version)
         clean_prompt = f"{base_prompt}, {no_beard_prompt}" if no_beard_prompt not in base_prompt else base_prompt
+        print(f"Clean prompt: {clean_prompt}")
         generator = torch.Generator(device=self.device).manual_seed(seed)
         
         try:
@@ -112,7 +113,9 @@ class StableDiffusionGenerator:
             ).images[0]
             
             # Use img2img to generate the bearded version
-            bearded_prompt = f"{base_prompt}, {beard_prompt}" if beard_prompt not in base_prompt else base_prompt
+            # Enhanced prompt that emphasizes keeping the same person and just adding a beard
+            bearded_prompt = f"The exact same person as before, identical facial features and structure, same lighting and pose. The only difference to show is that this man {beard_prompt}."
+            print(f"Bearded prompt: {bearded_prompt}")
             bearded_image = self.img2img_pipe(
                 prompt=bearded_prompt,
                 image=clean_image,
@@ -214,7 +217,8 @@ if __name__ == "__main__":
             base_prompt="A portrait photo of a young man, smiling, studio lighting",
             seed=42 + i,
             split="train",
-            pair_id=i
+            pair_id=i,
+            img2img_strength=0.5
         )
     
     # Or generate a full dataset with train/test splits
