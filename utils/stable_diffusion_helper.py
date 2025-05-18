@@ -3,8 +3,7 @@ from diffusers import StableDiffusionPipeline, StableDiffusionInpaintPipeline
 import numpy as np
 from PIL import Image, ImageDraw
 import os
-import random
-from typing import Tuple, List, Dict, Optional
+from typing import Tuple
 import logging
 
 # Set up logging
@@ -12,61 +11,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class StableDiffusionGenerator:
-    # Prompt pools for diverse dataset generation
-    BASE_PROMPTS = [
-        "A portrait photo of a young man with blue eyes, smiling, studio lighting",
-        "A portrait photo of a middle-aged man with brown eyes, neutral expression, natural lighting",
-        "A closeup portrait of a man with green eyes, serious expression, professional photography",
-        "A portrait of a young adult male with hazel eyes, slight smile, soft lighting",
-        "A headshot of a man in his 30s with dark eyes, professional attire, studio backdrop",
-        "A portrait of a man with asian features, warm smile, outdoor lighting",
-        "A professional photograph of a man with african features, confident expression, studio lighting",
-        "A portrait photo of a man with european features, casual attire, natural lighting",
-        "A closeup of a man in his 40s, thoughtful expression, dramatic lighting",
-        "A headshot of a man with hispanic features, friendly smile, bright lighting",
-        "A portrait of a man with middle eastern features, neutral expression, soft lighting",
-        "A professional photo of a man with mixed ethnicity, slight smile, office setting",
-        "A portrait of a man with strong jawline, direct gaze, monochrome lighting",
-        "A closeup photo of a man with distinctive cheekbones, subtle smile, natural lighting",
-        "A headshot of a man with broad forehead, professional appearance, studio setting"
-    ]
-    
-    BEARD_PROMPTS = [
-        "with a thick brown beard",
-        "with a full black beard",
-        "with a well-groomed beard",
-        "with a short stubble beard",
-        "with a long beard",
-        "with a salt and pepper beard",
-        "with a ginger beard",
-        "with a neatly trimmed goatee",
-        "with a thick mustache and beard",
-        "with a dark beard and mustache",
-        "with an unkempt beard",
-        "with a hipster beard",
-        "with a short boxed beard",
-        "with a corporate beard style",
-        "with a full beard and styled mustache"
-    ]
-    
-    NO_BEARD_PROMPTS = [
-        "completely clean-shaven face",
-        "with a smooth clean-shaven face",
-        "with no facial hair",
-        "with a clean-shaven appearance",
-        "with a freshly shaved face",
-        "with smooth skin and no beard",
-        "with no beard or mustache",
-        "with a clean professional look",
-        "with a smooth jawline",
-        "with a youthful clean-shaven appearance",
-        "with a bare face, no facial hair",
-        "with a clean executive look",
-        "with a formal clean-shaven style",
-        "with smooth facial features",
-        "with no trace of stubble or beard"
-    ]
-
     def __init__(self, model_id: str = "sd-legacy/stable-diffusion-v1-5"):
         """
         Initialize the Stable Diffusion pipeline.
@@ -255,11 +199,11 @@ class StableDiffusionGenerator:
         self,
         num_pairs: int = 100,
         test_split: float = 0.2,
-        base_prompts: Optional[List[str]] = None,
-        beard_prompts: Optional[List[str]] = None,
-        no_beard_prompts: Optional[List[str]] = None,
+        base_prompt: str = "High-quality 8K, modern head-and-shoulders mugshot photo of a young man",
+        beard_prompt: str = "with a thick, long, wavy beard",
+        no_beard_prompt: str = "with a beardless, smooth clean-shaven face",
         output_dir: str = "dataset",
-        start_seed: int = 42,
+        start_seed: int = 0,
         mask_width_factor: float = 0.33,
         mask_height_top_factor: float = 0.5,
         mask_height_bottom_factor: float = 0.25,
@@ -272,9 +216,9 @@ class StableDiffusionGenerator:
         Args:
             num_pairs (int): Number of image pairs to generate
             test_split (float): Proportion of pairs to use for testing (default: 0.2)
-            base_prompts (List[str], optional): List of base prompts to use (defaults to class BASE_PROMPTS)
-            beard_prompts (List[str], optional): List of beard prompts to use (defaults to class BEARD_PROMPTS)
-            no_beard_prompts (List[str], optional): List of no-beard prompts to use (defaults to class NO_BEARD_PROMPTS)
+            base_prompt (str): Base prompt for face generation
+            beard_prompt (str): Prompt for adding beard
+            no_beard_prompt (str): Prompt for clean-shaven face
             output_dir (str): Directory to save the dataset
             start_seed (int): Starting seed for reproducibility
             mask_width_factor (float): Controls width of beard mask
@@ -283,11 +227,6 @@ class StableDiffusionGenerator:
             mask_shape (str): Shape of the mask ("ellipse" or "rectangle")
             num_inference_steps (int): Number of inference steps
         """
-        # Use default prompt pools if not provided
-        base_prompts = base_prompts or self.BASE_PROMPTS
-        beard_prompts = beard_prompts or self.BEARD_PROMPTS
-        no_beard_prompts = no_beard_prompts or self.NO_BEARD_PROMPTS
-        
         # Calculate number of pairs for each split
         num_test_pairs = int(num_pairs * test_split)
         num_train_pairs = num_pairs - num_test_pairs
@@ -307,11 +246,6 @@ class StableDiffusionGenerator:
         total_generated = 0
         for i in range(num_pairs):
             seed = start_seed + i
-            
-            # Select random prompts for diversity
-            base_prompt = random.choice(base_prompts)
-            beard_prompt = random.choice(beard_prompts)
-            no_beard_prompt = random.choice(no_beard_prompts)
             
             try:
                 # Determine if this pair goes to train or test
