@@ -1,8 +1,10 @@
 import torch
-from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
-from PIL import Image
+from diffusers import StableDiffusionPipeline, StableDiffusionInpaintPipeline
+import numpy as np
+from PIL import Image, ImageDraw
 import os
-from typing import Tuple
+import random
+from typing import Tuple, List, Dict, Optional
 import logging
 
 # Set up logging
@@ -10,6 +12,61 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class StableDiffusionGenerator:
+    # Prompt pools for diverse dataset generation
+    BASE_PROMPTS = [
+        "A portrait photo of a young man with blue eyes, smiling, studio lighting",
+        "A portrait photo of a middle-aged man with brown eyes, neutral expression, natural lighting",
+        "A closeup portrait of a man with green eyes, serious expression, professional photography",
+        "A portrait of a young adult male with hazel eyes, slight smile, soft lighting",
+        "A headshot of a man in his 30s with dark eyes, professional attire, studio backdrop",
+        "A portrait of a man with asian features, warm smile, outdoor lighting",
+        "A professional photograph of a man with african features, confident expression, studio lighting",
+        "A portrait photo of a man with european features, casual attire, natural lighting",
+        "A closeup of a man in his 40s, thoughtful expression, dramatic lighting",
+        "A headshot of a man with hispanic features, friendly smile, bright lighting",
+        "A portrait of a man with middle eastern features, neutral expression, soft lighting",
+        "A professional photo of a man with mixed ethnicity, slight smile, office setting",
+        "A portrait of a man with strong jawline, direct gaze, monochrome lighting",
+        "A closeup photo of a man with distinctive cheekbones, subtle smile, natural lighting",
+        "A headshot of a man with broad forehead, professional appearance, studio setting"
+    ]
+    
+    BEARD_PROMPTS = [
+        "with a thick brown beard",
+        "with a full black beard",
+        "with a well-groomed beard",
+        "with a short stubble beard",
+        "with a long beard",
+        "with a salt and pepper beard",
+        "with a ginger beard",
+        "with a neatly trimmed goatee",
+        "with a thick mustache and beard",
+        "with a dark beard and mustache",
+        "with an unkempt beard",
+        "with a hipster beard",
+        "with a short boxed beard",
+        "with a corporate beard style",
+        "with a full beard and styled mustache"
+    ]
+    
+    NO_BEARD_PROMPTS = [
+        "completely clean-shaven face",
+        "with a smooth clean-shaven face",
+        "with no facial hair",
+        "with a clean-shaven appearance",
+        "with a freshly shaved face",
+        "with smooth skin and no beard",
+        "with no beard or mustache",
+        "with a clean professional look",
+        "with a smooth jawline",
+        "with a youthful clean-shaven appearance",
+        "with a bare face, no facial hair",
+        "with a clean executive look",
+        "with a formal clean-shaven style",
+        "with smooth facial features",
+        "with no trace of stubble or beard"
+    ]
+
     def __init__(self, model_id: str = "sd-legacy/stable-diffusion-v1-5"):
         """
         Initialize the Stable Diffusion pipeline.
@@ -21,17 +78,18 @@ class StableDiffusionGenerator:
         logger.info(f"Using device: {self.device}")
         
         try:
-            # Initialize both txt2img and img2img pipelines
+            # Initialize pipelines
             self.pipe = StableDiffusionPipeline.from_pretrained(
                 model_id,
                 torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
             )
-            self.img2img_pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+            self.inpaint_pipe = StableDiffusionInpaintPipeline.from_pretrained(
                 model_id,
                 torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
             )
+            
             self.pipe = self.pipe.to(self.device)
-            self.img2img_pipe = self.img2img_pipe.to(self.device)
+            self.inpaint_pipe = self.inpaint_pipe.to(self.device)
             logger.info("Successfully loaded Stable Diffusion models")
         except Exception as e:
             logger.error(f"Failed to load model: {str(e)}")
@@ -61,21 +119,62 @@ class StableDiffusionGenerator:
         complete_pairs = sum(1 for f in beard_files if f.replace('_beard.png', '_nobeard.png') in no_beard_files)
         return complete_pairs
 
+    def _create_beard_mask(self, image_size=(512, 512), width_factor=0.33, height_top_factor=0.5, height_bottom_factor=0.25, shape="ellipse"):
+        """
+        Create a mask for the beard area of a face.
+        
+        Args:
+            image_size (tuple): Size of the image (width, height)
+            width_factor (float): Controls the width of the mask (0.33 means it covers 1/3 from each side)
+            height_top_factor (float): Where the top of the mask starts (0.5 means middle of the face)
+            height_bottom_factor (float): Where the bottom of the mask ends (0.25 means 1/4 from the bottom)
+            shape (str): Shape of the mask ("ellipse" or "rectangle")
+            
+        Returns:
+            PIL.Image: Binary mask image with white in the beard area
+        """
+        # Create a blank mask
+        mask = Image.new("RGB", image_size, (0, 0, 0))
+        draw = ImageDraw.Draw(mask)
+        
+        # Calculate dimensions
+        width, height = image_size
+        
+        # Calculate mask boundaries
+        left = width * width_factor
+        right = width - (width * width_factor)
+        top = height * height_top_factor
+        bottom = height - (height * height_bottom_factor)
+        
+        # Draw the beard area in white based on the selected shape
+        if shape.lower() == "rectangle":
+            draw.rectangle([(left, top), (right, bottom)], fill=(255, 255, 255))
+        else:  # Default to ellipse
+            draw.ellipse([(left, top), (right, bottom)], fill=(255, 255, 255))
+        
+        # Convert to grayscale
+        mask = mask.convert("L")
+        
+        return mask
+
     def generate_paired_images(
         self,
         base_prompt: str,
         seed: int,
-        beard_prompt: str = "has a thick brown beard",
-        no_beard_prompt: str = "with a clean-shaven face",
+        beard_prompt: str = "with a thick brown beard",
+        no_beard_prompt: str = "clean-shaven face",
         output_dir: str = "dataset",
         split: str = "train",
         pair_id: int = 0,
         save_images: bool = True,
-        img2img_strength: float = 0.5  # Control how much of the original image to preserve
+        num_inference_steps: int = 50,
+        mask_width_factor: float = 0.33,
+        mask_height_top_factor: float = 0.5,
+        mask_height_bottom_factor: float = 0.25,
+        mask_shape: str = "ellipse"
     ) -> Tuple[Image.Image, Image.Image]:
         """
-        Generate a pair of images (with and without beard) using img2img for consistency.
-        First generates clean-shaven version, then adds beard using img2img.
+        Generate a pair of images (with and without beard) using inpainting for consistency.
         
         Args:
             base_prompt (str): Base prompt describing the person
@@ -86,10 +185,14 @@ class StableDiffusionGenerator:
             split (str): Dataset split ('train' or 'test')
             pair_id (int): ID for the image pair
             save_images (bool): Whether to save images to disk
-            img2img_strength (float): Strength of the img2img transformation (0.0 to 1.0)
+            num_inference_steps (int): Number of inference steps
+            mask_width_factor (float): Controls width of beard mask
+            mask_height_top_factor (float): Controls top position of beard mask
+            mask_height_bottom_factor (float): Controls bottom position of beard mask
+            mask_shape (str): Shape of the mask ("ellipse" or "rectangle")
             
         Returns:
-            Tuple[PIL.Image, PIL.Image]: Pair of generated images (clean-shaven, bearded)
+            Tuple[PIL.Image, PIL.Image]: Pair of generated images (bearded, clean-shaven)
         """
         # Check if the pair already exists
         beard_path = os.path.join(output_dir, split, "beard", f"person{pair_id:03d}_beard.png")
@@ -97,30 +200,37 @@ class StableDiffusionGenerator:
         
         if os.path.exists(beard_path) and os.path.exists(no_beard_path):
             logger.info(f"Pair {pair_id} already exists in {split} set, skipping generation")
-            return Image.open(no_beard_path), Image.open(beard_path)
+            return Image.open(beard_path), Image.open(no_beard_path)
         
-        # Generate the first image (clean-shaven version)
-        clean_prompt = f"{base_prompt}, {no_beard_prompt}" if no_beard_prompt not in base_prompt else base_prompt
-        print(f"Clean prompt: {clean_prompt}")
+        # Set up the random generator
         generator = torch.Generator(device=self.device).manual_seed(seed)
         
         try:
-            # Generate the clean-shaven version first
+            # Step 1: Generate a base face first (neutral, could be with or without beard)
+            # We'll use the clean-shaven version as our base
+            clean_base_prompt = f"{base_prompt}, {no_beard_prompt}" if no_beard_prompt not in base_prompt else base_prompt
             clean_image = self.pipe(
-                clean_prompt,
-                num_inference_steps=50,
+                clean_base_prompt,
+                num_inference_steps=num_inference_steps,
                 generator=generator
             ).images[0]
             
-            # Use img2img to generate the bearded version
-            # Enhanced prompt that emphasizes keeping the same person and just adding a beard
-            bearded_prompt = f"The exact same person as before, identical facial features and structure, same lighting and pose. The only difference to show is that this man {beard_prompt}."
-            print(f"Bearded prompt: {bearded_prompt}")
-            bearded_image = self.img2img_pipe(
-                prompt=bearded_prompt,
+            # Create a mask for the beard area
+            beard_mask = self._create_beard_mask(
+                clean_image.size,
+                width_factor=mask_width_factor,
+                height_top_factor=mask_height_top_factor,
+                height_bottom_factor=mask_height_bottom_factor,
+                shape=mask_shape
+            )
+            
+            # Step 2: Use inpainting to add a beard
+            beard_prompt = f"{base_prompt}, {beard_prompt}" if beard_prompt not in base_prompt else base_prompt
+            bearded_image = self.inpaint_pipe(
+                prompt=beard_prompt,
                 image=clean_image,
-                strength=img2img_strength,
-                num_inference_steps=50,
+                mask_image=beard_mask,
+                num_inference_steps=num_inference_steps,
                 generator=generator
             ).images[0]
             
@@ -135,7 +245,7 @@ class StableDiffusionGenerator:
                 bearded_image.save(beard_path)
                 clean_image.save(no_beard_path)
                 
-            return clean_image, bearded_image
+            return bearded_image, clean_image
             
         except Exception as e:
             logger.error(f"Failed to generate image pair: {str(e)}")
@@ -145,9 +255,16 @@ class StableDiffusionGenerator:
         self,
         num_pairs: int = 100,
         test_split: float = 0.2,
-        base_prompt: str = "A portrait photo of a young man, smiling, studio lighting",
+        base_prompts: Optional[List[str]] = None,
+        beard_prompts: Optional[List[str]] = None,
+        no_beard_prompts: Optional[List[str]] = None,
         output_dir: str = "dataset",
-        start_seed: int = 42
+        start_seed: int = 42,
+        mask_width_factor: float = 0.33,
+        mask_height_top_factor: float = 0.5,
+        mask_height_bottom_factor: float = 0.25,
+        mask_shape: str = "ellipse",
+        num_inference_steps: int = 50
     ) -> None:
         """
         Generate a dataset of paired images with train/test splits.
@@ -155,10 +272,22 @@ class StableDiffusionGenerator:
         Args:
             num_pairs (int): Number of image pairs to generate
             test_split (float): Proportion of pairs to use for testing (default: 0.2)
-            base_prompt (str): Base prompt for image generation
+            base_prompts (List[str], optional): List of base prompts to use (defaults to class BASE_PROMPTS)
+            beard_prompts (List[str], optional): List of beard prompts to use (defaults to class BEARD_PROMPTS)
+            no_beard_prompts (List[str], optional): List of no-beard prompts to use (defaults to class NO_BEARD_PROMPTS)
             output_dir (str): Directory to save the dataset
             start_seed (int): Starting seed for reproducibility
+            mask_width_factor (float): Controls width of beard mask
+            mask_height_top_factor (float): Controls top position of beard mask
+            mask_height_bottom_factor (float): Controls bottom position of beard mask
+            mask_shape (str): Shape of the mask ("ellipse" or "rectangle")
+            num_inference_steps (int): Number of inference steps
         """
+        # Use default prompt pools if not provided
+        base_prompts = base_prompts or self.BASE_PROMPTS
+        beard_prompts = beard_prompts or self.BEARD_PROMPTS
+        no_beard_prompts = no_beard_prompts or self.NO_BEARD_PROMPTS
+        
         # Calculate number of pairs for each split
         num_test_pairs = int(num_pairs * test_split)
         num_train_pairs = num_pairs - num_test_pairs
@@ -178,10 +307,16 @@ class StableDiffusionGenerator:
         total_generated = 0
         for i in range(num_pairs):
             seed = start_seed + i
+            
+            # Select random prompts for diversity
+            base_prompt = random.choice(base_prompts)
+            beard_prompt = random.choice(beard_prompts)
+            no_beard_prompt = random.choice(no_beard_prompts)
+            
             try:
                 # Determine if this pair goes to train or test
                 split = "test" if i < num_test_pairs else "train"
-                pair_id = i - num_test_pairs if split == "train" else i
+                pair_id = i if split == "test" else i - num_test_pairs
                 
                 # Skip if we already have enough pairs for this split
                 if (split == "train" and pair_id < existing_train_pairs) or \
@@ -190,10 +325,17 @@ class StableDiffusionGenerator:
                 
                 self.generate_paired_images(
                     base_prompt=base_prompt,
+                    beard_prompt=beard_prompt,
+                    no_beard_prompt=no_beard_prompt,
                     seed=seed,
                     output_dir=output_dir,
                     split=split,
-                    pair_id=pair_id
+                    pair_id=pair_id,
+                    num_inference_steps=num_inference_steps,
+                    mask_width_factor=mask_width_factor,
+                    mask_height_top_factor=mask_height_top_factor,
+                    mask_height_bottom_factor=mask_height_bottom_factor,
+                    mask_shape=mask_shape
                 )
                 total_generated += 1
                 
@@ -205,21 +347,3 @@ class StableDiffusionGenerator:
         
         logger.info(f"Dataset generation complete! Total pairs: {num_pairs} "
                    f"(Train: {num_train_pairs}, Test: {num_test_pairs})")
-
-# Example usage:
-if __name__ == "__main__":
-    # Initialize the generator
-    generator = StableDiffusionGenerator()
-    
-    # Generate a single pair (for testing)
-    for i in range(4):
-        clean, bearded = generator.generate_paired_images(
-            base_prompt="A portrait photo of a young man, smiling, studio lighting",
-            seed=42 + i,
-            split="train",
-            pair_id=i,
-            img2img_strength=0.5
-        )
-    
-    # Or generate a full dataset with train/test splits
-    # generator.generate_dataset(num_pairs=100, test_split=0.2)
