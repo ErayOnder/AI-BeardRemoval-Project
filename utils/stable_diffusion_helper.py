@@ -3,8 +3,14 @@ from diffusers import StableDiffusionPipeline, StableDiffusionInpaintPipeline
 import numpy as np
 from PIL import Image, ImageDraw
 import os
-from typing import Tuple
+from typing import Tuple, Optional
 import logging
+try:
+    import face_recognition
+    FACE_DETECTION_AVAILABLE = True
+except ImportError:
+    FACE_DETECTION_AVAILABLE = False
+    logging.warning("face_recognition not installed. Dynamic beard masking will not be available.")
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -63,38 +69,161 @@ class StableDiffusionGenerator:
         complete_pairs = sum(1 for f in beard_files if f.replace('_beard.png', '_nobeard.png') in no_beard_files)
         return complete_pairs
 
-    def _create_beard_mask(self, image_size=(512, 512), width_factor=0.33, height_top_factor=0.5, height_bottom_factor=0.25, shape="ellipse"):
+    def _detect_face_landmarks(self, image: Image.Image) -> Optional[dict]:
         """
-        Create a mask for the beard area of a face.
+        Detect facial landmarks using face_recognition library.
         
         Args:
-            image_size (tuple): Size of the image (width, height)
-            width_factor (float): Controls the width of the mask (0.33 means it covers 1/3 from each side)
-            height_top_factor (float): Where the top of the mask starts (0.5 means middle of the face)
-            height_bottom_factor (float): Where the bottom of the mask ends (0.25 means 1/4 from the bottom)
+            image (PIL.Image): Input image
+            
+        Returns:
+            Optional[dict]: Dictionary with facial landmarks or None if no face detected
+        """
+        if not FACE_DETECTION_AVAILABLE:
+            return None
+            
+        # Convert PIL image to numpy array for face_recognition
+        image_np = np.array(image)
+        
+        # Find all faces in the image
+        face_locations = face_recognition.face_locations(image_np)
+        
+        if not face_locations:
+            logger.warning("No face detected in the image")
+            return None
+            
+        # Get the first face (assuming one person in the image)
+        face_location = face_locations[0]  # (top, right, bottom, left)
+        
+        # Get facial landmarks
+        face_landmarks = face_recognition.face_landmarks(image_np, face_locations=[face_location])
+        
+        if not face_landmarks:
+            logger.warning("Face detected but no landmarks found")
+            return None
+            
+        landmarks = face_landmarks[0]
+        
+        # Add the face bounding box to the landmarks
+        result = {
+            "landmarks": landmarks,
+            "face_box": face_location  # (top, right, bottom, left)
+        }
+        
+        return result
+
+    def _create_beard_mask(self, 
+                           image: Image.Image, 
+                           margin_sides_factor: float = 0.2, 
+                           margin_top_factor: float = 0.3, 
+                           margin_bottom_factor: float = 0.1, 
+                           shape: str = "ellipse",
+                           face_landmarks: Optional[dict] = None) -> Image.Image:
+        """
+        Create a mask for the beard area of a face, optionally using face detection.
+        
+        Args:
+            image (PIL.Image): Input image
+            margin_sides_factor (float): Margin factor for sides of the mask (0.25 means 25% margin)
+            margin_top_factor (float): Margin factor for top of the mask (0.2 means 20% margin)
+            margin_bottom_factor (float): Margin factor for bottom of the mask (0.3 means 30% margin)
             shape (str): Shape of the mask ("ellipse" or "rectangle")
+            face_landmarks (Optional[dict]): Facial landmarks from _detect_face_landmarks
             
         Returns:
             PIL.Image: Binary mask image with white in the beard area
         """
         # Create a blank mask
-        mask = Image.new("RGB", image_size, (0, 0, 0))
+        mask = Image.new("RGB", image.size, (0, 0, 0))
         draw = ImageDraw.Draw(mask)
         
         # Calculate dimensions
-        width, height = image_size
+        width, height = image.size
         
-        # Calculate mask boundaries
-        left = width * width_factor
-        right = width - (width * width_factor)
-        top = height * height_top_factor
-        bottom = height - (height * height_bottom_factor)
+        # Initialize mask coordinates to prevent UnboundLocalError in edge cases
+        mask_left, mask_top, mask_right, mask_bottom = 0, 0, width, height
+
+        used_precise_landmarks = False
+        if face_landmarks and "landmarks" in face_landmarks:
+            landmarks_data = face_landmarks["landmarks"]
+            
+            # Get chin points (these are the most important for beard area)
+            chin_points = landmarks_data.get("chin", [])
+            
+            if chin_points:
+                # Get the bottom lip points to determine the top boundary
+                bottom_lip_points = landmarks_data.get("bottom_lip", [])
+                
+                # Calculate the region based on chin points
+                x_coords = [p[0] for p in chin_points]
+                y_coords = [p[1] for p in chin_points]
+                
+                if x_coords and y_coords:
+                    min_x_region = min(x_coords)
+                    max_x_region = max(x_coords)
+                    min_y_region = min(y_coords)
+                    max_y_region = max(y_coords)
+                    
+                    region_width = max_x_region - min_x_region
+                    region_height = max_y_region - min_y_region
+                    
+                    # Calculate the top boundary using bottom lip points
+                    if bottom_lip_points:
+                        bottom_lip_y = min(p[1] for p in bottom_lip_points)
+                        # Use the bottom lip as the top boundary, with a small margin
+                        mask_top = max(0, bottom_lip_y - int(margin_top_factor * region_height))
+                    else:
+                        # Fallback if no bottom lip points
+                        mask_top = max(0, min_y_region - int(margin_top_factor * region_height))
+                    
+                    # Calculate other boundaries with margins
+                    mask_bottom = min(height, max_y_region + int(margin_bottom_factor * region_height))
+                    mask_left = max(0, min_x_region - int(margin_sides_factor * region_width))
+                    mask_right = min(width, max_x_region + int(margin_sides_factor * region_width))
+                    
+                    logger.info("Using precise chin landmarks for beard mask.")
+                    used_precise_landmarks = True
+            else:
+                logger.info("Chin landmarks not found. Attempting fallback.")
+
+        if not used_precise_landmarks:
+            face_top_factor = 0.5
+            face_bottom_factor = 0.25
+            face_width_factor = 0.33
+            if face_landmarks and "face_box" in face_landmarks:
+                logger.info("Using face bounding box for beard mask (precise landmarks not available or failed).")
+                top_fb, right_fb, bottom_fb, left_fb = face_landmarks["face_box"]
+                face_width_val = right_fb - left_fb
+                face_height_val = bottom_fb - top_fb
+                face_center_x = (left_fb + right_fb) // 2
+                
+                mask_top = top_fb + int(face_height_val * face_top_factor)
+                mask_bottom = bottom_fb + int(face_height_val * face_bottom_factor * 0.5)
+                mask_left = face_center_x - int(face_width_val * face_width_factor)
+                mask_right = face_center_x + int(face_width_val * face_width_factor)
+            else:
+                # Fallback to the original method if face detection fails entirely
+                logger.info("Using fallback method for beard mask generation (no face detection or landmarks).")
+                mask_left = int(width * face_width_factor)
+                mask_right = int(width - (width * face_width_factor))
+                mask_top = int(height * face_top_factor)
+                mask_bottom = int(height - (height * face_bottom_factor))
         
+        # Ensure mask coordinates are valid before drawing
+        if mask_left >= mask_right or mask_top >= mask_bottom:
+            logger.warning(
+                f"Invalid mask dimensions: L={mask_left}, R={mask_right}, T={mask_top}, B={mask_bottom}. "
+                f"This may result in a tiny or no mask. Consider adjusting parameters or image input."
+            )
+            # Ensure drawable, though Pillow might handle it by drawing nothing or a line
+            mask_right = mask_left + 1 if mask_left >= mask_right else mask_right
+            mask_bottom = mask_top + 1 if mask_top >= mask_bottom else mask_bottom
+
         # Draw the beard area in white based on the selected shape
         if shape.lower() == "rectangle":
-            draw.rectangle([(left, top), (right, bottom)], fill=(255, 255, 255))
+            draw.rectangle([(mask_left, mask_top), (mask_right, mask_bottom)], fill=(255, 255, 255))
         else:  # Default to ellipse
-            draw.ellipse([(left, top), (right, bottom)], fill=(255, 255, 255))
+            draw.ellipse([(mask_left, mask_top), (mask_right, mask_bottom)], fill=(255, 255, 255))
         
         # Convert to grayscale
         mask = mask.convert("L")
@@ -105,17 +234,18 @@ class StableDiffusionGenerator:
         self,
         base_prompt: str,
         seed: int,
+        output_dir: str,
         beard_prompt: str = "with a thick brown beard",
         no_beard_prompt: str = "clean-shaven face",
-        output_dir: str = "dataset",
         split: str = "train",
         pair_id: int = 0,
         save_images: bool = True,
-        num_inference_steps: int = 50,
-        mask_width_factor: float = 0.33,
-        mask_height_top_factor: float = 0.5,
-        mask_height_bottom_factor: float = 0.25,
-        mask_shape: str = "ellipse"
+        num_inference_steps: int = 75,
+        mask_width_factor: float = 0.2,
+        mask_height_top_factor: float = 0.3,
+        mask_height_bottom_factor: float = 0.1,
+        mask_shape: str = "ellipse",
+        use_face_detection: bool = True
     ) -> Tuple[Image.Image, Image.Image]:
         """
         Generate a pair of images (with and without beard) using inpainting for consistency.
@@ -134,6 +264,7 @@ class StableDiffusionGenerator:
             mask_height_top_factor (float): Controls top position of beard mask
             mask_height_bottom_factor (float): Controls bottom position of beard mask
             mask_shape (str): Shape of the mask ("ellipse" or "rectangle")
+            use_face_detection (bool): Whether to use face detection for dynamic masking
             
         Returns:
             Tuple[PIL.Image, PIL.Image]: Pair of generated images (bearded, clean-shaven)
@@ -150,8 +281,7 @@ class StableDiffusionGenerator:
         generator = torch.Generator(device=self.device).manual_seed(seed)
         
         try:
-            # Step 1: Generate a base face first (neutral, could be with or without beard)
-            # We'll use the clean-shaven version as our base
+            # Step 1: Generate a base face first, we'll use the clean-shaven version as our base
             clean_base_prompt = f"{base_prompt}, {no_beard_prompt}" if no_beard_prompt not in base_prompt else base_prompt
             clean_image = self.pipe(
                 clean_base_prompt,
@@ -159,19 +289,29 @@ class StableDiffusionGenerator:
                 generator=generator
             ).images[0]
             
+            # Detect face if enabled
+            face_landmarks = None
+            if use_face_detection and FACE_DETECTION_AVAILABLE:
+                face_landmarks = self._detect_face_landmarks(clean_image)
+                if face_landmarks:
+                    logger.info("Face detected successfully. Using dynamic beard masking.")
+                else:
+                    logger.warning("Face detection failed. Falling back to fixed mask.")
+            
             # Create a mask for the beard area
             beard_mask = self._create_beard_mask(
-                clean_image.size,
-                width_factor=mask_width_factor,
-                height_top_factor=mask_height_top_factor,
-                height_bottom_factor=mask_height_bottom_factor,
-                shape=mask_shape
+                image=clean_image,
+                margin_sides_factor=mask_width_factor,
+                margin_top_factor=mask_height_top_factor,
+                margin_bottom_factor=mask_height_bottom_factor,
+                shape=mask_shape,
+                face_landmarks=face_landmarks
             )
             
             # Step 2: Use inpainting to add a beard
-            beard_prompt = f"{base_prompt}, {beard_prompt}" if beard_prompt not in base_prompt else base_prompt
+            full_beard_prompt = f"{base_prompt}, {beard_prompt}" if beard_prompt not in base_prompt else base_prompt
             bearded_image = self.inpaint_pipe(
-                prompt=beard_prompt,
+                prompt=full_beard_prompt,
                 image=clean_image,
                 mask_image=beard_mask,
                 num_inference_steps=num_inference_steps,
@@ -199,16 +339,17 @@ class StableDiffusionGenerator:
         self,
         num_pairs: int = 100,
         test_split: float = 0.2,
-        base_prompt: str = "High-quality 8K, modern head-and-shoulders mugshot photo of a young man",
+        base_prompt: str = "High-quality 8K, modern head-and-shoulders mugshot photo of a man",
         beard_prompt: str = "with a thick, long, wavy beard",
         no_beard_prompt: str = "with a beardless, smooth clean-shaven face",
         output_dir: str = "dataset",
         start_seed: int = 0,
-        mask_width_factor: float = 0.33,
-        mask_height_top_factor: float = 0.5,
-        mask_height_bottom_factor: float = 0.25,
+        mask_width_factor: float = 0.2,
+        mask_height_top_factor: float = 0.3,
+        mask_height_bottom_factor: float = 0.1,
         mask_shape: str = "ellipse",
-        num_inference_steps: int = 50
+        num_inference_steps: int = 50,
+        use_face_detection: bool = True
     ) -> None:
         """
         Generate a dataset of paired images with train/test splits.
@@ -226,6 +367,7 @@ class StableDiffusionGenerator:
             mask_height_bottom_factor (float): Controls bottom position of beard mask
             mask_shape (str): Shape of the mask ("ellipse" or "rectangle")
             num_inference_steps (int): Number of inference steps
+            use_face_detection (bool): Whether to use face detection for dynamic masking
         """
         # Calculate number of pairs for each split
         num_test_pairs = int(num_pairs * test_split)
@@ -269,7 +411,8 @@ class StableDiffusionGenerator:
                     mask_width_factor=mask_width_factor,
                     mask_height_top_factor=mask_height_top_factor,
                     mask_height_bottom_factor=mask_height_bottom_factor,
-                    mask_shape=mask_shape
+                    mask_shape=mask_shape,
+                    use_face_detection=use_face_detection
                 )
                 total_generated += 1
                 
