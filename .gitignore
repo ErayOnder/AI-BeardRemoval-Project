@@ -1,0 +1,39 @@
+# Ignore Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore model and large data directories
+models/
+dataset/
+
+# Ignore Colab and system files
+*.ipynb
+.DS_Store
+
+# Ignore environment and dependency files
+.env
+.venv
+venv/
+
+# Ignore log files
+*.log
+
+# Ignore any other large or generated files
+*.ckpt
+*.pth
+*.pt
+*.h5
+*.onnx
+*.npz
+*.npy
+
+# If you want to keep the folder structure but not the files, use:
+dataset/*
+!dataset/.gitkeep
+models/*
+!models/.gitkeep

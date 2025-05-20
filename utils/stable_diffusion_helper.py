@@ -275,7 +275,7 @@ class StableDiffusionGenerator:
         
         if os.path.exists(beard_path) and os.path.exists(no_beard_path):
             logger.info(f"Pair {pair_id} already exists in {split} set, skipping generation")
-            return Image.open(beard_path), Image.open(no_beard_path)
+            return None, None
         
         # Set up the random generator
         generator = torch.Generator(device=self.device).manual_seed(seed)
@@ -348,7 +348,7 @@ class StableDiffusionGenerator:
         mask_height_top_factor: float = 0.3,
         mask_height_bottom_factor: float = 0.1,
         mask_shape: str = "ellipse",
-        num_inference_steps: int = 50,
+        num_inference_steps: int = 75,
         use_face_detection: bool = True
     ) -> None:
         """
