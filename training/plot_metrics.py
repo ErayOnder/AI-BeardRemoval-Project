@@ -57,7 +57,7 @@ def load_metrics_from_checkpoint(checkpoint_path, device='cpu'):
     Returns:
         dict: Dictionary containing metrics or None if no metrics found
     """
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if 'metrics' in checkpoint:
         return checkpoint['metrics']
     else:

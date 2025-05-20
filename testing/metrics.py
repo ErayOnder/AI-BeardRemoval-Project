@@ -9,6 +9,7 @@ def get_transform():
     Get the standard transform pipeline for normalizing images.
     """
     return T.Compose([
+        T.Resize((256, 256)),
         T.ToTensor(),
         T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
