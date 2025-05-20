@@ -8,9 +8,9 @@ import numpy as np
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
 
-from dataset import BeardDataset
-from models import UNetGenerator, PatchDiscriminator
-from losses import gan_loss, l1
+from training.dataset import BeardDataset
+from training.models import UNetGenerator, PatchDiscriminator
+from training.losses import gan_loss, l1
 
 
 def parse_args():
@@ -71,7 +71,6 @@ def train(args):
     else:
         # Fallback to automatic detection
         device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    
     print(f"Using device: {device}")
     
     # Create checkpoint directory
@@ -93,8 +92,37 @@ def train(args):
     optimizer_G = torch.optim.Adam(generator.parameters(), lr=args.lr, betas=(0.5, 0.999))
     optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=args.lr, betas=(0.5, 0.999))
     
+    # Track best validation metrics
+    best_ssim = 0.0
+    start_epoch = 0
+    
+    # Check for previously saved models and load if available
+    best_model_path = checkpoint_dir / "best_generator.pth"
+    latest_model_path = None
+    
+    # Find the latest checkpoint if any
+    checkpoint_files = list(checkpoint_dir.glob("generator_epoch_*.pth"))
+    if checkpoint_files:
+        latest_model_path = max(checkpoint_files, key=lambda x: int(x.stem.split('_')[-1]))
+    
+    # Load the model if available
+    if latest_model_path and latest_model_path.exists():
+        print(f"Loading previous model: {latest_model_path}")
+        checkpoint = torch.load(latest_model_path, map_location=device)
+        generator.load_state_dict(checkpoint['model_state_dict'])
+        optimizer_G.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch']
+        print(f"Resuming from epoch {start_epoch}")
+    
+    # Load best validation score if available
+    if best_model_path.exists():
+        checkpoint = torch.load(best_model_path, map_location=device)
+        if 'best_ssim' in checkpoint:
+            best_ssim = checkpoint['best_ssim']
+            print(f"Previous best SSIM: {best_ssim:.4f}")
+    
     # Training loop
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         generator.train()
         discriminator.train()
         
@@ -171,15 +199,30 @@ def train(args):
         val_ssim, val_psnr = validate(generator, val_loader, device)
         print(f"\nValidation - SSIM: {val_ssim:.4f}, PSNR: {val_psnr:.4f}")
         
-        # Save checkpoint
+        # Save checkpoint every 20 epochs
         if (epoch + 1) % 20 == 0:
             checkpoint_path = checkpoint_dir / f"generator_epoch_{epoch+1:03d}.pth"
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': generator.state_dict(),
                 'optimizer_state_dict': optimizer_G.state_dict(),
+                'val_ssim': val_ssim,
+                'val_psnr': val_psnr,
             }, checkpoint_path)
             print(f"Saved checkpoint: {checkpoint_path}")
+        
+        # Save best model if we have a new best SSIM
+        if val_ssim > best_ssim:
+            best_ssim = val_ssim
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': generator.state_dict(),
+                'optimizer_state_dict': optimizer_G.state_dict(),
+                'val_ssim': val_ssim,
+                'val_psnr': val_psnr,
+                'best_ssim': best_ssim
+            }, best_model_path)
+            print(f"New best model saved with SSIM: {best_ssim:.4f}")
 
 
 if __name__ == "__main__":

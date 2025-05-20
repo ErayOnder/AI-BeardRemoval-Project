@@ -4,7 +4,7 @@ from PIL import Image
 from pathlib import Path
 import argparse
 
-from models import UNetGenerator
+from training.models import UNetGenerator
 
 
 def load_model(model_path, device):
