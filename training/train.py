@@ -21,6 +21,7 @@ def parse_args():
     parser.add_argument("--lambda_l1", type=float, default=100.0, help="Weight for L1 loss")
     parser.add_argument("--data_dir", type=str, default="dataset", help="Dataset directory")
     parser.add_argument("--checkpoint_dir", type=str, default="models", help="Directory for model checkpoints")
+    parser.add_argument("--device", type=str, default=None, help="Device to use (cuda, mps, cpu)")
     return parser.parse_args()
 
 
@@ -59,8 +60,18 @@ def validate(model, val_loader, device):
 
 
 def train(args):
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Set device - Use the provided device if available
+    if hasattr(args, 'device') and args.device:
+        # If it's already a torch.device object, use it directly
+        if isinstance(args.device, torch.device):
+            device = args.device
+        else:
+            # Otherwise convert string to torch.device
+            device = torch.device(args.device)
+    else:
+        # Fallback to automatic detection
+        device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    
     print(f"Using device: {device}")
     
     # Create checkpoint directory
@@ -71,8 +82,8 @@ def train(args):
     train_dataset = BeardDataset(args.data_dir, split="train")
     val_dataset = BeardDataset(args.data_dir, split="test")
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)  # Set num_workers=0 to avoid issues
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)  # Set num_workers=0 to avoid issues
     
     # Initialize models
     generator = UNetGenerator().to(device)

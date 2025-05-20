@@ -3,7 +3,11 @@ import torchvision.transforms as T
 from PIL import Image
 from pathlib import Path
 from typing import Dict, Tuple
+import logging
 
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class BeardDataset(torch.utils.data.Dataset):
     def __init__(self, root_dir: str, split: str = "train", img_size: int = 256):
@@ -22,6 +26,12 @@ class BeardDataset(torch.utils.data.Dataset):
         beard_dir = self.root_dir / "beard"
         no_beard_dir = self.root_dir / "no_beard"
         
+        # Check if directories exist
+        if not beard_dir.exists():
+            logger.warning(f"Beard directory not found: {beard_dir}")
+        if not no_beard_dir.exists():
+            logger.warning(f"No-beard directory not found: {no_beard_dir}")
+        
         # Collect matching pairs
         self.pairs = []
         for beard_path in beard_dir.glob("*_beard.png"):
@@ -29,6 +39,8 @@ class BeardDataset(torch.utils.data.Dataset):
             no_beard_path = no_beard_dir / beard_path.name.replace("_beard.png", "_nobeard.png")
             if no_beard_path.exists():
                 self.pairs.append((beard_path, no_beard_path))
+        
+        logger.info(f"Found {len(self.pairs)} image pairs in {split} set")
         
         # Define image transformations
         self.transform = T.Compose([
@@ -54,13 +66,29 @@ class BeardDataset(torch.utils.data.Dataset):
         beard_path, no_beard_path = self.pairs[idx]
         
         # Load and transform images
-        beard_img = Image.open(beard_path).convert("RGB")
-        no_beard_img = Image.open(no_beard_path).convert("RGB")
-        
-        beard_tensor = self.transform(beard_img)
-        no_beard_tensor = self.transform(no_beard_img)
-        
-        return {
-            "input": beard_tensor,
-            "target": no_beard_tensor
-        } 
+        try:
+            beard_img = Image.open(beard_path).convert("RGB")
+            no_beard_img = Image.open(no_beard_path).convert("RGB")
+            
+            # Apply the same transform to both images to ensure they have the same size
+            beard_tensor = self.transform(beard_img)
+            no_beard_tensor = self.transform(no_beard_img)
+            
+            # Verify tensor shapes
+            if beard_tensor.shape != no_beard_tensor.shape:
+                logger.warning(f"Tensor shape mismatch: {beard_tensor.shape} vs {no_beard_tensor.shape}")
+                # Force resize if needed
+                if beard_tensor.shape != torch.Size([3, self.img_size, self.img_size]):
+                    beard_tensor = T.functional.resize(beard_tensor, (self.img_size, self.img_size))
+                if no_beard_tensor.shape != torch.Size([3, self.img_size, self.img_size]):
+                    no_beard_tensor = T.functional.resize(no_beard_tensor, (self.img_size, self.img_size))
+            
+            return {
+                "input": beard_tensor,
+                "target": no_beard_tensor
+            }
+        except Exception as e:
+            logger.error(f"Error loading images {beard_path} or {no_beard_path}: {e}")
+            # Return a default tensor pair in case of error
+            default_tensor = torch.zeros(3, self.img_size, self.img_size)
+            return {"input": default_tensor, "target": default_tensor} 
