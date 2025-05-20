@@ -1,7 +1,6 @@
 import torch
 import torchvision.transforms as T
 from PIL import Image
-from pathlib import Path
 import argparse
 
 from training.models import UNetGenerator
@@ -19,7 +18,7 @@ def load_model(model_path, device):
         UNetGenerator: Loaded model
     """
     model = UNetGenerator().to(device)
-    checkpoint = torch.load(model_path, map_location=device)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     return model
@@ -97,7 +96,7 @@ def predict(img_path, model_path, device=None):
 def main():
     parser = argparse.ArgumentParser(description="Generate beard-removed images")
     parser.add_argument("--input", type=str, required=True, help="Path to input image")
-    parser.add_argument("--model", type=str, default="models/generator_epoch_200.pth", help="Path to model checkpoint")
+    parser.add_argument("--model", type=str, default="models/best_generator.pth", help="Path to model checkpoint")
     parser.add_argument("--output", type=str, help="Path to save output image (if not specified, will show image)")
     args = parser.parse_args()
     

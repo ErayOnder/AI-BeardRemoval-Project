@@ -2,7 +2,7 @@ import torch
 import torchvision.transforms as T
 from PIL import Image
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict
 import logging
 
 # Set up logging
@@ -15,7 +15,7 @@ class BeardDataset(torch.utils.data.Dataset):
         Initialize the beard removal dataset.
         
         Args:
-            root_dir (str): Root directory containing 'beard' and 'no_beard' subfolders
+            root_dir (str): Root directory containing 'train/beard', 'train/no_beard', 'test/beard', 'test/no_beard' subfolders
             split (str): Dataset split ('train' or 'test')
             img_size (int): Size to resize images to (both width and height)
         """

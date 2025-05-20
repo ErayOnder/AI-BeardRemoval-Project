@@ -1,10 +1,9 @@
 import argparse
-import os
 from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
-import numpy as np
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
 
@@ -16,7 +15,7 @@ from training.losses import gan_loss, l1
 def parse_args():
     parser = argparse.ArgumentParser(description="Train Pix2Pix for beard removal")
     parser.add_argument("--epochs", type=int, default=200, help="Number of epochs")
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
     parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate")
     parser.add_argument("--lambda_l1", type=float, default=100.0, help="Weight for L1 loss")
     parser.add_argument("--data_dir", type=str, default="dataset", help="Dataset directory")
@@ -60,6 +59,7 @@ def validate(model, val_loader, device):
 
 
 def train(args):
+    """Train the model"""
     # Set device - Use the provided device if available
     if hasattr(args, 'device') and args.device:
         # If it's already a torch.device object, use it directly
@@ -81,8 +81,8 @@ def train(args):
     train_dataset = BeardDataset(args.data_dir, split="train")
     val_dataset = BeardDataset(args.data_dir, split="test")
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)  # Set num_workers=0 to avoid issues
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)  # Set num_workers=0 to avoid issues
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
     
     # Initialize models
     generator = UNetGenerator().to(device)
@@ -92,34 +92,32 @@ def train(args):
     optimizer_G = torch.optim.Adam(generator.parameters(), lr=args.lr, betas=(0.5, 0.999))
     optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=args.lr, betas=(0.5, 0.999))
     
+    # Initialize learning rate schedulers
+    scheduler_G = ReduceLROnPlateau(optimizer_G, mode='max', factor=0.5, patience=5, verbose=True)
+    scheduler_D = ReduceLROnPlateau(optimizer_D, mode='max', factor=0.5, patience=5, verbose=True)
+    
     # Track best validation metrics
     best_ssim = 0.0
     start_epoch = 0
     
     # Check for previously saved models and load if available
-    best_model_path = checkpoint_dir / "best_generator.pth"
-    latest_model_path = None
-    
-    # Find the latest checkpoint if any
-    checkpoint_files = list(checkpoint_dir.glob("generator_epoch_*.pth"))
-    if checkpoint_files:
-        latest_model_path = max(checkpoint_files, key=lambda x: int(x.stem.split('_')[-1]))
-    
-    # Load the model if available
-    if latest_model_path and latest_model_path.exists():
-        print(f"Loading previous model: {latest_model_path}")
-        checkpoint = torch.load(latest_model_path, map_location=device)
-        generator.load_state_dict(checkpoint['model_state_dict'])
-        optimizer_G.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch']
-        print(f"Resuming from epoch {start_epoch}")
-    
-    # Load best validation score if available
+    best_model_path = checkpoint_dir / "best_generator.pth"    
     if best_model_path.exists():
         checkpoint = torch.load(best_model_path, map_location=device)
         if 'best_ssim' in checkpoint:
             best_ssim = checkpoint['best_ssim']
             print(f"Previous best SSIM: {best_ssim:.4f}")
+    
+    # Initialize metrics tracking
+    metrics = {
+        'epoch': [],
+        'D_loss': [],
+        'G_loss': [],
+        'G_GAN': [],
+        'G_L1': [],
+        'val_ssim': [],
+        'val_psnr': []
+    }
     
     # Training loop
     for epoch in range(start_epoch, args.epochs):
@@ -195,21 +193,28 @@ def train(args):
                 "G_L1": running_loss_G_L1 / (pbar.n + 1)
             })
         
+        # Calculate average losses for the epoch
+        avg_loss_D = running_loss_D / len(train_loader)
+        avg_loss_G = running_loss_G / len(train_loader)
+        avg_loss_G_GAN = running_loss_G_GAN / len(train_loader)
+        avg_loss_G_L1 = running_loss_G_L1 / len(train_loader)
+        
         # Validation
         val_ssim, val_psnr = validate(generator, val_loader, device)
         print(f"\nValidation - SSIM: {val_ssim:.4f}, PSNR: {val_psnr:.4f}")
         
-        # Save checkpoint every 20 epochs
-        if (epoch + 1) % 20 == 0:
-            checkpoint_path = checkpoint_dir / f"generator_epoch_{epoch+1:03d}.pth"
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': generator.state_dict(),
-                'optimizer_state_dict': optimizer_G.state_dict(),
-                'val_ssim': val_ssim,
-                'val_psnr': val_psnr,
-            }, checkpoint_path)
-            print(f"Saved checkpoint: {checkpoint_path}")
+        # Store metrics
+        metrics['epoch'].append(epoch + 1)
+        metrics['D_loss'].append(avg_loss_D)
+        metrics['G_loss'].append(avg_loss_G)
+        metrics['G_GAN'].append(avg_loss_G_GAN)
+        metrics['G_L1'].append(avg_loss_G_L1)
+        metrics['val_ssim'].append(val_ssim)
+        metrics['val_psnr'].append(val_psnr)
+        
+        # Step the schedulers based on validation SSIM
+        scheduler_G.step(val_ssim)
+        scheduler_D.step(val_ssim)
         
         # Save best model if we have a new best SSIM
         if val_ssim > best_ssim:
@@ -218,11 +223,16 @@ def train(args):
                 'epoch': epoch + 1,
                 'model_state_dict': generator.state_dict(),
                 'optimizer_state_dict': optimizer_G.state_dict(),
+                'scheduler_G_state_dict': scheduler_G.state_dict(),
+                'scheduler_D_state_dict': scheduler_D.state_dict(),
                 'val_ssim': val_ssim,
                 'val_psnr': val_psnr,
-                'best_ssim': best_ssim
+                'best_ssim': best_ssim,
+                'metrics': metrics,
             }, best_model_path)
             print(f"New best model saved with SSIM: {best_ssim:.4f}")
+    
+    return metrics, generator
 
 
 if __name__ == "__main__":

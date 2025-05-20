@@ -68,21 +68,13 @@ class UNetGenerator(nn.Module):
         self.bottleneck = conv_block(features * 8, features * 8, down=True, use_batch=False, act="leaky_relu")  # 512, 1x1 output for 256x256 input
         
         # Decoder (upsampling path with skip connections)
-        # Decoder 1: Input from bottleneck (8F), Output 8F, Upsamples 1x1 -> 2x2
         self.decoder1 = conv_block(features * 8, features * 8, down=False, use_batch=True, act="relu")
-        # Decoder 2: Input cat(dec1, enc7) (16F), Output 8F, Upsamples 2x2 -> 4x4
         self.decoder2 = conv_block(features * 16, features * 8, down=False, use_batch=True, act="relu")
-        # Decoder 3: Input cat(dec2, enc6) (16F), Output 8F, Upsamples 4x4 -> 8x8
         self.decoder3 = conv_block(features * 16, features * 8, down=False, use_batch=True, act="relu")
-        # Decoder 4: Input cat(dec3, enc5) (16F), Output 8F, Upsamples 8x8 -> 16x16
         self.decoder4 = conv_block(features * 16, features * 8, down=False, use_batch=True, act="relu")
-        # Decoder 5: Input cat(dec4, enc4) (16F), Output 4F, Upsamples 16x16 -> 32x32
         self.decoder5 = conv_block(features * 16, features * 4, down=False, use_batch=True, act="relu")
-        # Decoder 6: Input cat(dec5, enc3) (8F), Output 2F, Upsamples 32x32 -> 64x64
         self.decoder6 = conv_block(features * 8, features * 2, down=False, use_batch=True, act="relu")
-        # Decoder 7: Input cat(dec6, enc2) (4F), Output F, Upsamples 64x64 -> 128x128
         self.decoder7 = conv_block(features * 4, features, down=False, use_batch=True, act="relu")
-        # Decoder 8: Input cat(dec7, enc1) (2F), Output F, Upsamples 128x128 -> 256x256
         self.decoder8 = conv_block(features * 2, features, down=False, use_batch=True, act="relu")
         
         # Final layer: Takes output of decoder8 (F channels, 256x256)
@@ -147,11 +139,7 @@ class PatchDiscriminator(nn.Module):
         
         # Layer 1: no batch norm
         self.layer1 = conv_block(in_channels, features, down=True, use_batch=False, act="leaky_relu")  # 64, stride 2
-        
-        # Layer 2
         self.layer2 = conv_block(features, features * 2, down=True, use_batch=True, act="leaky_relu")  # 128, stride 2
-        
-        # Layer 3
         self.layer3 = conv_block(features * 2, features * 4, down=True, use_batch=True, act="leaky_relu")  # 256, stride 2
         
         # Layer 4: stride 1

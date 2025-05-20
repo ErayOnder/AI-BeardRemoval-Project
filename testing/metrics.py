@@ -1,7 +1,17 @@
-import torch
 import numpy as np
 from skimage.metrics import structural_similarity as ssim
+from skimage.metrics import peak_signal_noise_ratio as psnr
+import torchvision.transforms as T
+from PIL import Image
 
+def get_transform():
+    """
+    Get the standard transform pipeline for normalizing images.
+    """
+    return T.Compose([
+        T.ToTensor(),
+        T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
 
 def tensor_to_numpy(tensor):
     """
@@ -19,18 +29,24 @@ def tensor_to_numpy(tensor):
     img = ((img + 1) * 127.5).astype(np.uint8)
     return img
 
-
 def compute_ssim(img1, img2):
     """
     Compute Structural Similarity Index (SSIM) between two images.
     
     Args:
-        img1 (torch.Tensor): First image tensor in range [-1, 1]
-        img2 (torch.Tensor): Second image tensor in range [-1, 1]
+        img1 (PIL.Image or torch.Tensor): First image
+        img2 (PIL.Image or torch.Tensor): Second image
         
     Returns:
-        float: SSIM score
+        float: SSIM score between 0 and 1
     """
+    # Convert PIL images to tensors if needed
+    transform = get_transform()
+    if isinstance(img1, Image.Image):
+        img1 = transform(img1)
+    if isinstance(img2, Image.Image):
+        img2 = transform(img2)
+    
     # Convert tensors to numpy arrays
     img1_np = tensor_to_numpy(img1)
     img2_np = tensor_to_numpy(img2)
@@ -38,31 +54,27 @@ def compute_ssim(img1, img2):
     # Compute SSIM
     return ssim(img1_np, img2_np, channel_axis=2, data_range=255)
 
-
 def compute_psnr(img1, img2):
     """
     Compute Peak Signal-to-Noise Ratio (PSNR) between two images.
     
     Args:
-        img1 (torch.Tensor): First image tensor in range [-1, 1]
-        img2 (torch.Tensor): Second image tensor in range [-1, 1]
+        img1 (PIL.Image or torch.Tensor): First image
+        img2 (PIL.Image or torch.Tensor): Second image
         
     Returns:
         float: PSNR score in dB
     """
+    # Convert PIL images to tensors if needed
+    transform = get_transform()
+    if isinstance(img1, Image.Image):
+        img1 = transform(img1)
+    if isinstance(img2, Image.Image):
+        img2 = transform(img2)
+    
     # Convert tensors to numpy arrays in range [0, 1]
     img1_np = (img1.cpu().numpy() + 1) / 2
     img2_np = (img2.cpu().numpy() + 1) / 2
     
-    # Compute MSE
-    mse = np.mean((img1_np - img2_np) ** 2)
-    
-    # Avoid division by zero
-    if mse == 0:
-        return float('inf')
-    
     # Compute PSNR
-    max_pixel = 1.0
-    psnr = 20 * np.log10(max_pixel / np.sqrt(mse))
-    
-    return psnr 
+    return psnr(img1_np, img2_np, data_range=1.0) 
